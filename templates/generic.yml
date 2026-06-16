@@ -46,18 +46,21 @@ jobs:
       - name: YAML & JSON parse
         run: |
           python - <<'PY'
-          import sys, glob, json, yaml
+          import sys, json, yaml
+          from pathlib import Path
           bad = 0
-          for f in glob.glob('**/*.yml', recursive=True) + glob.glob('**/*.yaml', recursive=True):
+          # rglob descends into hidden dirs (e.g. .github/, .claude-plugin/), unlike glob.glob('**').
+          def find(pat):
+              return [p for p in Path('.').rglob(pat)
+                      if '.git' not in p.parts and 'node_modules' not in p.parts]
+          for f in find('*.yml') + find('*.yaml'):
               try:
-                  list(yaml.safe_load_all(open(f, encoding='utf-8')))
+                  list(yaml.safe_load_all(f.open(encoding='utf-8')))
               except Exception as e:
                   print(f"::error file={f}::invalid YAML: {e}"); bad += 1
-          for f in glob.glob('**/*.json', recursive=True):
-              if 'node_modules' in f:
-                  continue
+          for f in find('*.json'):
               try:
-                  json.load(open(f, encoding='utf-8'))
+                  json.load(f.open(encoding='utf-8'))
               except Exception as e:
                   print(f"::error file={f}::invalid JSON: {e}"); bad += 1
           sys.exit(1 if bad else 0)

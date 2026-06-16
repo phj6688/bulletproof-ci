@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Fix dot-dir-blind discovery in `skill` and `generic` templates: switch from
+  `glob.glob('**')` (which skips hidden dirs) to `pathlib.rglob`, so manifests at
+  `.claude-plugin/plugin.json` / `marketplace.json` are found and validated. The
+  skill gate now fails only when neither a SKILL.md nor a plugin/marketplace
+  manifest exists; command-only plugins pass.
+- Fix Python template failing on dependency-less repos: drop the unconditional
+  `cache: pip` from `actions/setup-python`, which errored when no
+  requirements.txt/pyproject.toml was present.
+- Fix generator crash when a branch name contains a slash (e.g.
+  `feat/phase2-baselines`): switch the `sed` substitution delimiter to `|`.
+
 ## 0.1.0
 
 - Initial release.

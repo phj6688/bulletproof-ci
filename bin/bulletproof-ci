@@ -131,8 +131,10 @@ fi
 BRANCHES_YAML="${BRANCHES//,/, }"
 
 render() {
-  sed -e "s/__BRANCHES__/${BRANCHES_YAML}/g" \
-      -e "s/__GATE_NAME__/${GATE_NAME}/g" \
+  # Use '|' as the sed delimiter so slashes in branch names (e.g. feat/x) or the
+  # gate name don't terminate the s/// command. Refnames can't contain '|'.
+  sed -e "s|__BRANCHES__|${BRANCHES_YAML}|g" \
+      -e "s|__GATE_NAME__|${GATE_NAME}|g" \
       "$TEMPLATE"
 }
 
