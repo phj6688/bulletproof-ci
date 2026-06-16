@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [__BRANCHES__]
+  push:
+    branches: [__BRANCHES__]
+  workflow_dispatch:
+
+# One run per ref; new pushes cancel superseded runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f pyproject.toml ] && grep -q 'ruff' pyproject.toml; then
+            pip install ruff
+            echo "LINTER=ruff" >> "$GITHUB_ENV"
+          elif [ -f .ruff.toml ] || [ -f ruff.toml ]; then
+            pip install ruff
+            echo "LINTER=ruff" >> "$GITHUB_ENV"
+          else
+            pip install flake8
+            echo "LINTER=flake8" >> "$GITHUB_ENV"
+          fi
+      - name: Lint
+        run: |
+          if [ "$LINTER" = "ruff" ]; then
+            ruff check .
+            ruff format --check .
+          else
+            echo "No ruff config found; running flake8 with defaults."
+            flake8 . || { echo "::error::flake8 reported issues"; exit 1; }
+          fi
+
+  typecheck:
+    name: Type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Run mypy (only if configured)
+        run: |
+          python -m pip install --upgrade pip
+          has_mypy=no
+          if [ -f mypy.ini ] || [ -f .mypy.ini ]; then has_mypy=yes; fi
+          if [ -f pyproject.toml ] && grep -q '\[tool.mypy\]' pyproject.toml; then has_mypy=yes; fi
+          if [ -f setup.cfg ] && grep -q '\[mypy\]' setup.cfg; then has_mypy=yes; fi
+          if [ "$has_mypy" = "yes" ]; then
+            pip install mypy
+            if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
+            if [ -f pyproject.toml ]; then pip install -e . || true; fi
+            mypy .
+          else
+            echo "No mypy config found; skipping type check."
+          fi
+
+  test:
+    name: Test (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install project & test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e . || pip install . || true; fi
+      - name: Run pytest
+        run: |
+          if git ls-files '*test_*.py' '*_test.py' 'tests/**/*.py' | grep -q .; then
+            pytest -q
+          else
+            echo "No tests yet; skipping pytest (gate stays green)."
+          fi
+
+  build:
+    name: Build & import sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install & import
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
+            pip install . && echo "Package installed cleanly."
+          elif [ -f requirements.txt ]; then
+            pip install -r requirements.txt && echo "Requirements install OK (no package metadata to build)."
+          else
+            echo "No build metadata (pyproject/setup/requirements); skipping build sanity."
+          fi
+
+  ci-passed:
+    name: __GATE_NAME__
+    if: always()
+    needs: [lint, typecheck, test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to pass
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A required CI job did not succeed."
+          echo "Results: ${{ join(needs.*.result, ' ') }}"
+          exit 1
+      - name: All gates green
+        run: echo "All CI jobs passed."

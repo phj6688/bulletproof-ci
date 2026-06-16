@@ -1,0 +1,14 @@
+{
+  "name": "bulletproof-ci",
+  "owner": {
+    "name": "Peyman",
+    "email": "peyman.h.j@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "bulletproof-ci",
+      "source": "./",
+      "description": "Generate a per-stack GitHub Actions CI workflow whose jobs all funnel into one aggregate gate job, and optionally apply matching branch protection."
+    }
+  ]
+}

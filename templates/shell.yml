@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [__BRANCHES__]
+  push:
+    branches: [__BRANCHES__]
+  workflow_dispatch:
+
+# One run per ref; new pushes cancel superseded runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run shellcheck on all *.sh
+        run: |
+          mapfile -t files < <(git ls-files '*.sh')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No *.sh files; skipping shellcheck (gate stays green)."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          printf '%s\n' "${files[@]}"
+          shellcheck "${files[@]}"
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Lint workflow files
+        run: |
+          if [ -d .github/workflows ] && ls .github/workflows/*.y*ml >/dev/null 2>&1; then
+            docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+          else
+            echo "No workflow files to lint."
+          fi
+
+  validate:
+    name: Validate (yaml & docs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: YAML syntax
+        run: |
+          python - <<'PY'
+          import sys, glob, yaml
+          bad = 0
+          for f in glob.glob('**/*.yml', recursive=True) + glob.glob('**/*.yaml', recursive=True):
+              try:
+                  list(yaml.safe_load_all(open(f, encoding='utf-8')))
+              except Exception as e:
+                  print(f"::error file={f}::invalid YAML: {e}")
+                  bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+      - name: Markdown present & non-empty
+        run: |
+          mapfile -t md < <(git ls-files '*.md')
+          for f in "${md[@]}"; do
+            if [ ! -s "$f" ]; then echo "::error::empty markdown: $f"; exit 1; fi
+          done
+          echo "Checked ${#md[@]} markdown file(s)."
+
+  ci-passed:
+    name: __GATE_NAME__
+    if: always()
+    needs: [shellcheck, actionlint, validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to pass
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A required CI job did not succeed."
+          echo "Results: ${{ join(needs.*.result, ' ') }}"
+          exit 1
+      - name: All gates green
+        run: echo "All CI jobs passed."

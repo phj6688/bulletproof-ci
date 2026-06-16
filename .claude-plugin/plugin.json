@@ -1,0 +1,15 @@
+{
+  "name": "bulletproof-ci",
+  "version": "0.1.0",
+  "description": "Generate a per-stack GitHub Actions CI workflow whose jobs all funnel into one aggregate gate job, and optionally apply matching branch protection. One required check, no deadlock.",
+  "author": {
+    "name": "Peyman",
+    "email": "peyman.h.j@gmail.com"
+  },
+  "repository": "https://github.com/phj6688/bulletproof-ci",
+  "license": "MIT",
+  "homepage": "https://github.com/phj6688/bulletproof-ci",
+  "keywords": ["ci", "github-actions", "branch-protection", "workflow", "claude-code", "skill"],
+  "commands": "./commands/",
+  "skills": "./skills/"
+}

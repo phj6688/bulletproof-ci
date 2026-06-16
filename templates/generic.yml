@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [__BRANCHES__]
+  push:
+    branches: [__BRANCHES__]
+  workflow_dispatch:
+
+# One run per ref; new pushes cancel superseded runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Lint workflow files
+        run: |
+          if [ -d .github/workflows ] && ls .github/workflows/*.y*ml >/dev/null 2>&1; then
+            docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+          else
+            echo "No workflow files to lint."
+          fi
+
+  sanity:
+    name: Structure & lint sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: YAML & JSON parse
+        run: |
+          python - <<'PY'
+          import sys, glob, json, yaml
+          bad = 0
+          for f in glob.glob('**/*.yml', recursive=True) + glob.glob('**/*.yaml', recursive=True):
+              try:
+                  list(yaml.safe_load_all(open(f, encoding='utf-8')))
+              except Exception as e:
+                  print(f"::error file={f}::invalid YAML: {e}"); bad += 1
+          for f in glob.glob('**/*.json', recursive=True):
+              if 'node_modules' in f:
+                  continue
+              try:
+                  json.load(open(f, encoding='utf-8'))
+              except Exception as e:
+                  print(f"::error file={f}::invalid JSON: {e}"); bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+      - name: Shell scripts (if any)
+        run: |
+          mapfile -t files < <(git ls-files '*.sh')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No shell scripts."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck "${files[@]}"
+
+  ci-passed:
+    name: __GATE_NAME__
+    if: always()
+    needs: [actionlint, sanity]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to pass
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A required CI job did not succeed."
+          echo "Results: ${{ join(needs.*.result, ' ') }}"
+          exit 1
+      - name: All gates green
+        run: echo "All CI jobs passed."

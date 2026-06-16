@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# bulletproof-ci: generate a single-aggregate-gate GitHub Actions workflow,
+# optionally apply matching branch protection, and optionally open the PR.
+#
+# Dependencies: bash, sed, git, gh (for --protect / --pr), python3 (YAML check).
+set -euo pipefail
+
+VERSION="0.1.0"
+GATE_NAME="CI passed"
+BRANCHES="dev,master,main"
+STACK="auto"
+PROTECT=0
+ENFORCE_ADMINS=1
+REVIEWS=0
+E2E=0
+PR=0
+DRY_RUN=0
+TARGET=""
+
+# Resolve template dir: <repo>/templates relative to this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMPLATE_DIR="${BULLETPROOF_CI_TEMPLATES:-$(cd "$SCRIPT_DIR/.." && pwd)/templates}"
+
+usage() {
+  cat <<'EOF'
+bulletproof-ci [PATH] [flags]
+
+Generate a GitHub Actions workflow whose jobs all funnel into ONE aggregate
+gate job (default name "CI passed"). That single context is what branch
+protection requires, so protecting dev/master/main never deadlocks.
+
+Arguments:
+  PATH                      Repo to operate on (default: current directory).
+
+Flags:
+  --stack VALUE             auto|python|node|shell|skill|generic (default: auto).
+  --branches a,b,c          Trigger + protect branches (default: dev,master,main).
+  --gate-name "NAME"        Aggregate gate job name (default: "CI passed").
+  --e2e                     Add a Playwright e2e job (node stacks only).
+  --protect                 After generating, apply branch protection requiring
+                            the gate on each --branches branch (needs gh).
+  --enforce-admins          Enforce protection on admins too (default with --protect).
+  --no-enforce-admins       Do not enforce protection on admins.
+  --reviews N               Required approving reviews for protection (default: 0).
+  --pr                      Commit to a chore/ci branch, push, open a PR (needs gh)
+                            instead of only writing the working tree.
+  --dry-run                 Print intended actions; write/change nothing.
+  -h, --help                Show this help.
+
+Examples:
+  bulletproof-ci                         # auto-detect, write .github/workflows/ci.yml
+  bulletproof-ci . --stack node --e2e    # node app with Playwright e2e job
+  bulletproof-ci ~/projects/foo --protect --branches dev,master
+  bulletproof-ci --stack skill --pr      # open a PR adding CI to a skill repo
+  bulletproof-ci --dry-run               # show the plan only
+EOF
+}
+
+die() { echo "error: $*" >&2; exit 1; }
+log() { echo "[bulletproof-ci] $*" >&2; }
+
+# ---- parse args -------------------------------------------------------------
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --stack)         STACK="${2:-}"; shift 2 ;;
+    --stack=*)       STACK="${1#*=}"; shift ;;
+    --branches)      BRANCHES="${2:-}"; shift 2 ;;
+    --branches=*)    BRANCHES="${1#*=}"; shift ;;
+    --gate-name)     GATE_NAME="${2:-}"; shift 2 ;;
+    --gate-name=*)   GATE_NAME="${1#*=}"; shift ;;
+    --reviews)       REVIEWS="${2:-}"; shift 2 ;;
+    --reviews=*)     REVIEWS="${1#*=}"; shift ;;
+    --protect)       PROTECT=1; shift ;;
+    --enforce-admins)    ENFORCE_ADMINS=1; shift ;;
+    --no-enforce-admins) ENFORCE_ADMINS=0; shift ;;
+    --e2e)           E2E=1; shift ;;
+    --pr)            PR=1; shift ;;
+    --dry-run)       DRY_RUN=1; shift ;;
+    -h|--help)       usage; exit 0 ;;
+    --version)       echo "$VERSION"; exit 0 ;;
+    -*)              die "unknown flag: $1 (see --help)" ;;
+    *)               [ -z "$TARGET" ] || die "unexpected extra argument: $1"
+                     TARGET="$1"; shift ;;
+  esac
+done
+
+TARGET="${TARGET:-$PWD}"
+[ -d "$TARGET" ] || die "path not found: $TARGET"
+TARGET="$(cd "$TARGET" && pwd)"
+
+case "$STACK" in
+  auto|python|node|shell|skill|generic) ;;
+  *) die "invalid --stack: $STACK" ;;
+esac
+
+# ---- stack detection --------------------------------------------------------
+detect_stack() {
+  local d="$1"
+  if [ -f "$d/SKILL.md" ] || [ -f "$d/.claude-plugin/plugin.json" ] || \
+     ls "$d"/skills/*/SKILL.md >/dev/null 2>&1; then
+    echo skill; return
+  fi
+  if [ -f "$d/package.json" ]; then echo node; return; fi
+  if [ -f "$d/pyproject.toml" ] || [ -f "$d/requirements.txt" ] || \
+     [ -f "$d/setup.py" ] || [ -f "$d/setup.cfg" ]; then
+    echo python; return
+  fi
+  # Mostly shell? count tracked-or-present .sh vs other source files.
+  local sh other
+  sh=$(find "$d" -maxdepth 3 -name '*.sh' -not -path '*/.git/*' 2>/dev/null | wc -l | tr -d ' ')
+  other=$(find "$d" -maxdepth 3 \( -name '*.py' -o -name '*.ts' -o -name '*.js' -o -name '*.go' -o -name '*.rs' \) -not -path '*/.git/*' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$sh" -gt 0 ] && [ "$sh" -ge "$other" ]; then echo shell; return; fi
+  echo generic
+}
+
+if [ "$STACK" = "auto" ]; then
+  STACK="$(detect_stack "$TARGET")"
+  log "auto-detected stack: $STACK"
+fi
+
+TEMPLATE="$TEMPLATE_DIR/$STACK.yml"
+[ -f "$TEMPLATE" ] || die "template not found: $TEMPLATE"
+
+if [ "$E2E" = "1" ] && [ "$STACK" != "node" ]; then
+  log "warning: --e2e only applies to node stacks; ignoring for stack '$STACK'."
+  E2E=0
+fi
+
+# ---- render -----------------------------------------------------------------
+# Branches: "a,b,c" -> "a, b, c" for the YAML list.
+BRANCHES_YAML="${BRANCHES//,/, }"
+
+render() {
+  sed -e "s/__BRANCHES__/${BRANCHES_YAML}/g" \
+      -e "s/__GATE_NAME__/${GATE_NAME}/g" \
+      "$TEMPLATE"
+}
+
+# Inject a Playwright e2e job before the gate job, and add it to the gate needs.
+# Content arrives via the BPC_CONTENT env var because stdin is the heredoc.
+inject_e2e() {
+  BPC_CONTENT="$1" python3 <<'PY'
+import os, sys
+text = os.environ["BPC_CONTENT"]
+e2e_job = """  e2e:
+    name: Playwright e2e
+    needs: setup
+    runs-on: ubuntu-latest
+    env:
+      PM: ${{ needs.setup.outputs.pm }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - if: env.PM == 'pnpm'
+        uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: ${{ env.PM }}
+      - name: Install
+        run: |
+          case "$PM" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --frozen-lockfile ;;
+            npm)  npm ci ;;
+          esac
+      - name: Install Playwright browsers
+        run: npx --no-install playwright install --with-deps chromium || npx playwright install --with-deps chromium
+      - name: Run Playwright tests
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.['test:e2e']?0:1)"; then
+            $PM run test:e2e
+          else
+            npx --no-install playwright test || npx playwright test
+          fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+"""
+marker = "  ci-passed:\n"
+idx = text.index(marker)
+text = text[:idx] + e2e_job + text[idx:]
+# add e2e to the gate's needs list
+text = text.replace("needs: [setup, lint, typecheck, test, build]",
+                    "needs: [setup, lint, typecheck, test, build, e2e]")
+sys.stdout.write(text)
+PY
+}
+
+CONTENT="$(render)"
+if [ "$E2E" = "1" ]; then
+  CONTENT="$(inject_e2e "$CONTENT")"
+fi
+
+OUT_REL=".github/workflows/ci.yml"
+OUT="$TARGET/$OUT_REL"
+
+# ---- validate emitted YAML --------------------------------------------------
+validate_yaml() {
+  printf '%s' "$1" | python3 -c 'import sys,yaml; list(yaml.safe_load_all(sys.stdin)); print("yaml-ok")' \
+    || die "generated workflow is not valid YAML (internal error)"
+}
+
+# ---- plan summary -----------------------------------------------------------
+log "target repo:     $TARGET"
+log "stack:           $STACK"
+log "branches:        $BRANCHES"
+log "gate name:       $GATE_NAME"
+log "e2e job:         $([ "$E2E" = 1 ] && echo yes || echo no)"
+log "output:          $OUT_REL"
+log "protect:         $([ "$PROTECT" = 1 ] && echo "yes (enforce-admins=$ENFORCE_ADMINS, reviews=$REVIEWS)" || echo no)"
+log "open PR:         $([ "$PR" = 1 ] && echo yes || echo no)"
+
+if [ "$DRY_RUN" = "1" ]; then
+  log "--dry-run: would write $OUT with the following content:"
+  echo "----------------------------------------------------------------"
+  printf '%s\n' "$CONTENT"
+  echo "----------------------------------------------------------------"
+  validate_yaml "$CONTENT" >/dev/null && log "(dry-run) emitted YAML parses OK"
+  [ "$PROTECT" = "1" ] && log "(dry-run) would apply branch protection on: $BRANCHES"
+  [ "$PR" = "1" ] && log "(dry-run) would commit to chore/ci, push, and open a PR"
+  exit 0
+fi
+
+validate_yaml "$CONTENT" >/dev/null
+log "emitted YAML parses OK"
+
+# ---- write workflow (working tree) -----------------------------------------
+write_workflow() {
+  mkdir -p "$TARGET/.github/workflows"
+  printf '%s\n' "$CONTENT" > "$OUT"
+  log "wrote $OUT"
+}
+
+# ---- branch protection ------------------------------------------------------
+apply_protection() {
+  command -v gh >/dev/null || die "--protect needs the gh CLI"
+  command -v jq >/dev/null || die "--protect needs jq"
+  local slug
+  slug="$(cd "$TARGET" && gh repo view --json nameWithOwner -q .nameWithOwner)" \
+    || die "could not resolve GitHub repo for $TARGET (need an origin remote)"
+  log "applying branch protection on $slug"
+  local admins="false"
+  [ "$ENFORCE_ADMINS" = "1" ] && admins="true"
+  local IFS=','
+  for br in $BRANCHES; do
+    [ -n "$br" ] || continue
+    # Skip branches that do not exist on the remote.
+    if ! gh api "repos/$slug/branches/$br" >/dev/null 2>&1; then
+      log "  - branch '$br' absent on remote; skipping protection"
+      continue
+    fi
+    local payload
+    payload="$(jq -n \
+      --arg ctx "$GATE_NAME" \
+      --argjson admins "$admins" \
+      --argjson reviews "$REVIEWS" \
+      '{
+        required_status_checks: { strict: true, contexts: [$ctx] },
+        enforce_admins: $admins,
+        required_pull_request_reviews: { required_approving_review_count: $reviews },
+        restrictions: null,
+        allow_force_pushes: false,
+        allow_deletions: false
+      }')"
+    if printf '%s' "$payload" | gh api -X PUT "repos/$slug/branches/$br/protection" --input - >/dev/null; then
+      log "  - protected '$br' requiring '$GATE_NAME' (strict, enforce_admins=$admins, reviews=$REVIEWS)"
+    else
+      log "  - WARNING: failed to protect '$br' (insufficient permissions?)"
+    fi
+  done
+}
+
+# ---- PR flow ----------------------------------------------------------------
+open_pr() {
+  command -v gh >/dev/null || die "--pr needs the gh CLI"
+  [ -d "$TARGET/.git" ] || die "--pr needs a git repo at $TARGET"
+  ( cd "$TARGET"
+    local base
+    base="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo dev)"
+    git switch -c chore/ci 2>/dev/null || git switch chore/ci
+    git add "$OUT_REL"
+    if git diff --cached --quiet; then
+      log "no workflow changes to commit"
+    else
+      git -c user.name="Peyman" -c user.email="peyman.h.j@gmail.com" \
+        commit -m "chore: add bulletproof CI workflow"
+      git push -u origin chore/ci
+      gh pr create --base "$base" --head chore/ci \
+        --title "chore: add bulletproof CI" \
+        --body "Adds a single-aggregate-gate CI workflow (gate: \`$GATE_NAME\`) for the \`$STACK\` stack. Generated by bulletproof-ci." \
+        || log "PR may already exist; check gh pr list"
+    fi
+  )
+}
+
+if [ "$PR" = "1" ]; then
+  write_workflow
+  open_pr
+else
+  write_workflow
+fi
+
+[ "$PROTECT" = "1" ] && apply_protection
+
+log "done."
