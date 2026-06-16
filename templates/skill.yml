@@ -28,23 +28,28 @@ jobs:
           python-version: '3.11'
       - name: Install PyYAML
         run: python -m pip install --quiet pyyaml
-      - name: SKILL.md frontmatter has name + description
+      - name: Validate SKILL.md & plugin manifests
         run: |
           python - <<'PY'
-          import sys, glob, yaml
-          skills = glob.glob('SKILL.md') + glob.glob('skills/**/SKILL.md', recursive=True)
-          if not skills:
-              print("::error::no SKILL.md found at root or under skills/")
-              sys.exit(1)
+          import sys, json, yaml
+          from pathlib import Path
+
+          # rglob descends into hidden dirs (e.g. .claude-plugin/), unlike glob.glob('**').
+          def find(name):
+              return [p for p in Path('.').rglob(name) if '.git' not in p.parts]
+
+          skills = find('SKILL.md')
+          plugins = find('plugin.json')
+          markets = find('marketplace.json')
           bad = 0
+
           for path in skills:
-              text = open(path, encoding='utf-8').read()
+              text = path.read_text(encoding='utf-8')
               if not text.startswith('---'):
                   print(f"::error file={path}::missing YAML frontmatter")
                   bad += 1; continue
-              fm = text.split('---', 2)[1]
               try:
-                  data = yaml.safe_load(fm) or {}
+                  data = yaml.safe_load(text.split('---', 2)[1]) or {}
               except Exception as e:
                   print(f"::error file={path}::invalid frontmatter YAML: {e}")
                   bad += 1; continue
@@ -53,20 +58,25 @@ jobs:
                       print(f"::error file={path}::frontmatter missing '{key}'")
                       bad += 1
               print(f"OK: {path}")
-          sys.exit(1 if bad else 0)
-          PY
-      - name: Validate JSON manifests (plugin.json / marketplace.json)
-        run: |
-          python - <<'PY'
-          import sys, glob, json
-          bad = 0
-          for f in glob.glob('**/plugin.json', recursive=True) + glob.glob('**/marketplace.json', recursive=True):
+
+          for path in plugins + markets:
               try:
-                  json.load(open(f, encoding='utf-8'))
-                  print(f"OK: {f}")
+                  data = json.loads(path.read_text(encoding='utf-8'))
               except Exception as e:
-                  print(f"::error file={f}::invalid JSON: {e}")
-                  bad += 1
+                  print(f"::error file={path}::invalid JSON: {e}")
+                  bad += 1; continue
+              # marketplace.json describes plugins, not itself; only require name/description on plugin.json.
+              if path.name == 'plugin.json':
+                  for key in ('name', 'description'):
+                      if not data.get(key):
+                          print(f"::error file={path}::manifest missing '{key}'")
+                          bad += 1
+              print(f"OK: {path}")
+
+          if not skills and not plugins and not markets:
+              print("::error::no SKILL.md or plugin/marketplace manifest found anywhere in the repo")
+              bad += 1
+
           sys.exit(1 if bad else 0)
           PY
 
