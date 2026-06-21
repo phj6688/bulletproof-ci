@@ -168,6 +168,7 @@ IFS="$_nv_ifs"
 # rendered template is byte-identical to the no-workdir output.
 DEFAULTS_BLOCK=""
 CACHE_DEP_PATH=""
+GATE_WD=""
 if [ "$STACK" = "node" ] && [ -n "$WORKDIR" ]; then
   # Match the lockfile actually present in the workdir; the node template's
   # setup step keys cache off this same precedence (pnpm > yarn > npm).
@@ -176,6 +177,10 @@ if [ "$STACK" = "node" ] && [ -n "$WORKDIR" ]; then
   else lockfile="package-lock.json"; fi
   DEFAULTS_BLOCK=$'\n\ndefaults:\n  run:\n    working-directory: '"$WORKDIR"
   CACHE_DEP_PATH="          cache-dependency-path: $WORKDIR/$lockfile"
+  # The aggregate gate job has no checkout, so the workflow-level
+  # working-directory would point it at a subdir that does not exist there.
+  # Override just that job back to the workspace root (it only echoes).
+  GATE_WD=$'\n    defaults:\n      run:\n        working-directory: ${{ github.workspace }}'
 fi
 
 render() {
@@ -192,6 +197,7 @@ render() {
   # empty, so the no-workdir output stays byte-identical to the template.
   rendered="${rendered//$'\n__DEFAULTS_BLOCK__'/$DEFAULTS_BLOCK}"
   rendered="${rendered//$'\n__CACHE_DEP_PATH__'/${CACHE_DEP_PATH:+$'\n'$CACHE_DEP_PATH}}"
+  rendered="${rendered//$'\n__GATE_WD__'/$GATE_WD}"
   printf '%s' "$rendered"
 }
 

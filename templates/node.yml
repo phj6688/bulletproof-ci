@@ -174,6 +174,7 @@ __CACHE_DEP_PATH__
     if: always()
     needs: [setup, lint, typecheck, test, build]
     runs-on: ubuntu-latest
+__GATE_WD__
     steps:
       - name: Require every job to pass
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
