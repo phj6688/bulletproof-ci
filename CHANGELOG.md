@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `--node-versions LIST` to control the node test matrix (comma-separated,
+  e.g. `22` or `20,22,24`). Default `20,22` keeps the matrix byte-identical to the
+  previous hardcoded `['20', '22']`.
 - Add `--workdir DIR` for repos whose package manifest lives in a subdirectory
   (e.g. a Node app entirely under `router/`). Auto-detection looks inside DIR, and
   the node workflow runs install/lint/typecheck/test/build there via a top-level

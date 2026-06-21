@@ -108,7 +108,7 @@ __CACHE_DEP_PATH__
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: [__NODE_VERSIONS__]
     env:
       PM: ${{ needs.setup.outputs.pm }}
     steps:

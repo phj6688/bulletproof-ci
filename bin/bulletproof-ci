@@ -17,6 +17,7 @@ PR=0
 DRY_RUN=0
 TARGET=""
 WORKDIR=""
+NODE_VERSIONS="20,22"
 
 # Resolve template dir: <repo>/templates relative to this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,6 +40,8 @@ Flags:
   --workdir DIR             Run the package manifest steps inside DIR (relative to
                             the repo). For repos whose app lives in a subdir (e.g.
                             router/). Affects the node stack; default empty = root.
+  --node-versions LIST      Comma-separated node versions for the test matrix
+                            (node stack). Default: 20,22. E.g. "22" or "20,22,24".
   --gate-name "NAME"        Aggregate gate job name (default: "CI passed").
   --e2e                     Add a Playwright e2e job (node stacks only).
   --protect                 After generating, apply branch protection requiring
@@ -72,6 +75,8 @@ while [ $# -gt 0 ]; do
     --branches=*)    BRANCHES="${1#*=}"; shift ;;
     --workdir)       WORKDIR="${2:-}"; shift 2 ;;
     --workdir=*)     WORKDIR="${1#*=}"; shift ;;
+    --node-versions)   NODE_VERSIONS="${2:-}"; shift 2 ;;
+    --node-versions=*) NODE_VERSIONS="${1#*=}"; shift ;;
     --gate-name)     GATE_NAME="${2:-}"; shift 2 ;;
     --gate-name=*)   GATE_NAME="${1#*=}"; shift ;;
     --reviews)       REVIEWS="${2:-}"; shift 2 ;;
@@ -148,6 +153,17 @@ fi
 # Branches: "a,b,c" -> "a, b, c" for the YAML list.
 BRANCHES_YAML="${BRANCHES//,/, }"
 
+# Node test matrix: "20,22" -> "'20', '22'" (the bracket sits in node.yml).
+# The default "20,22" reproduces today's hardcoded ['20', '22'] byte-for-byte.
+NODE_VERSIONS_YAML=""
+_nv_ifs="$IFS"; IFS=','
+for _v in $NODE_VERSIONS; do
+  [ -n "$_v" ] || continue
+  NODE_VERSIONS_YAML="${NODE_VERSIONS_YAML:+$NODE_VERSIONS_YAML, }'$_v'"
+done
+IFS="$_nv_ifs"
+[ -n "$NODE_VERSIONS_YAML" ] || die "--node-versions must list at least one version"
+
 # Workdir wiring for the node stack. Empty workdir => empty blocks => the
 # rendered template is byte-identical to the no-workdir output.
 DEFAULTS_BLOCK=""
@@ -168,6 +184,7 @@ render() {
   local rendered
   rendered="$(sed -e "s|__BRANCHES__|${BRANCHES_YAML}|g" \
       -e "s|__GATE_NAME__|${GATE_NAME}|g" \
+      -e "s|__NODE_VERSIONS__|${NODE_VERSIONS_YAML}|g" \
       "$TEMPLATE")"
   # Multi-line workdir blocks are spliced via bash string replacement (no sed
   # newline escaping). Each placeholder sits on its own line; replacing the
