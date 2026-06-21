@@ -47,6 +47,7 @@ bulletproof-ci --stack skill --pr       # open a chore/ci PR adding CI to a skil
 |---|---|---|
 | `--stack auto\|python\|node\|shell\|skill\|generic` | `auto` | Template to use. `auto` detects from files. |
 | `--branches a,b,c` | `dev,master,main` | Trigger branches, and (with `--protect`) the branches to protect. |
+| `--workdir DIR` | (root) | Run the node package-manifest steps inside `DIR` (relative to the repo), for apps that live in a subdir (e.g. `router/`). Auto-detection looks inside `DIR` too. |
 | `--gate-name "NAME"` | `CI passed` | Name of the aggregate gate job (the required context). |
 | `--e2e` | off | Add a Playwright e2e job (node stacks only). |
 | `--protect` | off | Apply branch protection requiring the gate on each branch (needs `gh` + `jq`). |

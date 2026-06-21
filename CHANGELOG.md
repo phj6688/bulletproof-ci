@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add `--workdir DIR` for repos whose package manifest lives in a subdirectory
+  (e.g. a Node app entirely under `router/`). Auto-detection looks inside DIR, and
+  the node workflow runs install/lint/typecheck/test/build there via a top-level
+  `defaults.run.working-directory` plus a `cache-dependency-path: DIR/<lockfile>`
+  on each `setup-node`. Empty (default) keeps root-only behavior byte-identical.
+
 - Fix dot-dir-blind discovery in `skill` and `generic` templates: switch from
   `glob.glob('**')` (which skips hidden dirs) to `pathlib.rglob`, so manifests at
   `.claude-plugin/plugin.json` / `marketplace.json` are found and validated. The

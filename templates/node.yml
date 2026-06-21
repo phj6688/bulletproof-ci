@@ -14,6 +14,7 @@ concurrency:
 
 permissions:
   contents: read
+__DEFAULTS_BLOCK__
 
 jobs:
   setup:
@@ -50,6 +51,7 @@ jobs:
         with:
           node-version: '20'
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
@@ -83,6 +85,7 @@ jobs:
         with:
           node-version: '20'
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
@@ -118,6 +121,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
@@ -149,6 +153,7 @@ jobs:
         with:
           node-version: '20'
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
