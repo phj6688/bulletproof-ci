@@ -14,6 +14,7 @@ concurrency:
 
 permissions:
   contents: read
+__DEFAULTS_BLOCK__
 
 jobs:
   setup:
@@ -50,6 +51,7 @@ jobs:
         with:
           node-version: '20'
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
@@ -83,6 +85,7 @@ jobs:
         with:
           node-version: '20'
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
@@ -105,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22']
+        node: [__NODE_VERSIONS__]
     env:
       PM: ${{ needs.setup.outputs.pm }}
     steps:
@@ -118,6 +121,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
@@ -149,6 +153,7 @@ jobs:
         with:
           node-version: '20'
           cache: ${{ env.PM }}
+__CACHE_DEP_PATH__
       - name: Install
         run: |
           case "$PM" in
@@ -169,6 +174,7 @@ jobs:
     if: always()
     needs: [setup, lint, typecheck, test, build]
     runs-on: ubuntu-latest
+__GATE_WD__
     steps:
       - name: Require every job to pass
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

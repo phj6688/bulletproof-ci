@@ -16,6 +16,8 @@ E2E=0
 PR=0
 DRY_RUN=0
 TARGET=""
+WORKDIR=""
+NODE_VERSIONS="20,22"
 
 # Resolve template dir: <repo>/templates relative to this script.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +37,11 @@ Arguments:
 Flags:
   --stack VALUE             auto|python|node|shell|skill|generic (default: auto).
   --branches a,b,c          Trigger + protect branches (default: dev,master,main).
+  --workdir DIR             Run the package manifest steps inside DIR (relative to
+                            the repo). For repos whose app lives in a subdir (e.g.
+                            router/). Affects the node stack; default empty = root.
+  --node-versions LIST      Comma-separated node versions for the test matrix
+                            (node stack). Default: 20,22. E.g. "22" or "20,22,24".
   --gate-name "NAME"        Aggregate gate job name (default: "CI passed").
   --e2e                     Add a Playwright e2e job (node stacks only).
   --protect                 After generating, apply branch protection requiring
@@ -66,6 +73,10 @@ while [ $# -gt 0 ]; do
     --stack=*)       STACK="${1#*=}"; shift ;;
     --branches)      BRANCHES="${2:-}"; shift 2 ;;
     --branches=*)    BRANCHES="${1#*=}"; shift ;;
+    --workdir)       WORKDIR="${2:-}"; shift 2 ;;
+    --workdir=*)     WORKDIR="${1#*=}"; shift ;;
+    --node-versions)   NODE_VERSIONS="${2:-}"; shift 2 ;;
+    --node-versions=*) NODE_VERSIONS="${1#*=}"; shift ;;
     --gate-name)     GATE_NAME="${2:-}"; shift 2 ;;
     --gate-name=*)   GATE_NAME="${1#*=}"; shift ;;
     --reviews)       REVIEWS="${2:-}"; shift 2 ;;
@@ -87,6 +98,18 @@ done
 TARGET="${TARGET:-$PWD}"
 [ -d "$TARGET" ] || die "path not found: $TARGET"
 TARGET="$(cd "$TARGET" && pwd)"
+
+# Optional subdirectory holding the package manifest. Empty = repo root.
+WORKDIR="${WORKDIR#./}"          # tolerate a leading ./
+WORKDIR="${WORKDIR%/}"           # tolerate a trailing /
+if [ -n "$WORKDIR" ]; then
+  case "$WORKDIR" in
+    /*|*..*) die "--workdir must be a relative path inside the repo: $WORKDIR" ;;
+  esac
+  [ -d "$TARGET/$WORKDIR" ] || die "--workdir not found: $TARGET/$WORKDIR"
+fi
+# Directory used for stack auto-detection and lockfile lookup.
+DETECT_DIR="$TARGET${WORKDIR:+/$WORKDIR}"
 
 case "$STACK" in
   auto|python|node|shell|skill|generic) ;;
@@ -114,7 +137,7 @@ detect_stack() {
 }
 
 if [ "$STACK" = "auto" ]; then
-  STACK="$(detect_stack "$TARGET")"
+  STACK="$(detect_stack "$DETECT_DIR")"
   log "auto-detected stack: $STACK"
 fi
 
@@ -130,12 +153,52 @@ fi
 # Branches: "a,b,c" -> "a, b, c" for the YAML list.
 BRANCHES_YAML="${BRANCHES//,/, }"
 
+# Node test matrix: "20,22" -> "'20', '22'" (the bracket sits in node.yml).
+# The default "20,22" reproduces today's hardcoded ['20', '22'] byte-for-byte.
+NODE_VERSIONS_YAML=""
+_nv_ifs="$IFS"; IFS=','
+for _v in $NODE_VERSIONS; do
+  [ -n "$_v" ] || continue
+  NODE_VERSIONS_YAML="${NODE_VERSIONS_YAML:+$NODE_VERSIONS_YAML, }'$_v'"
+done
+IFS="$_nv_ifs"
+[ -n "$NODE_VERSIONS_YAML" ] || die "--node-versions must list at least one version"
+
+# Workdir wiring for the node stack. Empty workdir => empty blocks => the
+# rendered template is byte-identical to the no-workdir output.
+DEFAULTS_BLOCK=""
+CACHE_DEP_PATH=""
+GATE_WD=""
+if [ "$STACK" = "node" ] && [ -n "$WORKDIR" ]; then
+  # Match the lockfile actually present in the workdir; the node template's
+  # setup step keys cache off this same precedence (pnpm > yarn > npm).
+  if [ -f "$DETECT_DIR/pnpm-lock.yaml" ]; then lockfile="pnpm-lock.yaml";
+  elif [ -f "$DETECT_DIR/yarn.lock" ]; then lockfile="yarn.lock";
+  else lockfile="package-lock.json"; fi
+  DEFAULTS_BLOCK=$'\n\ndefaults:\n  run:\n    working-directory: '"$WORKDIR"
+  CACHE_DEP_PATH="          cache-dependency-path: $WORKDIR/$lockfile"
+  # The aggregate gate job has no checkout, so the workflow-level
+  # working-directory would point it at a subdir that does not exist there.
+  # Override just that job back to the workspace root (it only echoes).
+  GATE_WD=$'\n    defaults:\n      run:\n        working-directory: ${{ github.workspace }}'
+fi
+
 render() {
   # Use '|' as the sed delimiter so slashes in branch names (e.g. feat/x) or the
   # gate name don't terminate the s/// command. Refnames can't contain '|'.
-  sed -e "s|__BRANCHES__|${BRANCHES_YAML}|g" \
+  local rendered
+  rendered="$(sed -e "s|__BRANCHES__|${BRANCHES_YAML}|g" \
       -e "s|__GATE_NAME__|${GATE_NAME}|g" \
-      "$TEMPLATE"
+      -e "s|__NODE_VERSIONS__|${NODE_VERSIONS_YAML}|g" \
+      "$TEMPLATE")"
+  # Multi-line workdir blocks are spliced via bash string replacement (no sed
+  # newline escaping). Each placeholder sits on its own line; replacing the
+  # leading newline + placeholder deletes the whole line when the value is
+  # empty, so the no-workdir output stays byte-identical to the template.
+  rendered="${rendered//$'\n__DEFAULTS_BLOCK__'/$DEFAULTS_BLOCK}"
+  rendered="${rendered//$'\n__CACHE_DEP_PATH__'/${CACHE_DEP_PATH:+$'\n'$CACHE_DEP_PATH}}"
+  rendered="${rendered//$'\n__GATE_WD__'/$GATE_WD}"
+  printf '%s' "$rendered"
 }
 
 # Inject a Playwright e2e job before the gate job, and add it to the gate needs.
@@ -212,6 +275,7 @@ validate_yaml() {
 # ---- plan summary -----------------------------------------------------------
 log "target repo:     $TARGET"
 log "stack:           $STACK"
+[ -n "$WORKDIR" ] && log "workdir:         $WORKDIR"
 log "branches:        $BRANCHES"
 log "gate name:       $GATE_NAME"
 log "e2e job:         $([ "$E2E" = 1 ] && echo yes || echo no)"
