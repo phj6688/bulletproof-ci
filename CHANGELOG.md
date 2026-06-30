@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add `--mutation` (with `--cron`, default `0 4 * * 1`) to emit a second
+  workflow `.github/workflows/mutation.yml`: a scheduled + `workflow_dispatch`
+  mutation-testing run (cosmic-ray for python, Stryker for node) that installs
+  the tool in-job, scopes to ~100-200 mutants, and writes a kill-rate to the run
+  summary. Advisory only (never fails on a low score, no aggregate gate, no
+  `pull_request`/`push` triggers), so it is never a per-PR blocker. python/node
+  only; other stacks log a warning and are skipped. Honors `--workdir` and
+  `--dry-run`. Tests in `tests/test-mutation.sh`, wired into CI.
 - Add `--node-versions LIST` to control the node test matrix (comma-separated,
   e.g. `22` or `20,22,24`). Default `20,22` keeps the matrix byte-identical to the
   previous hardcoded `['20', '22']`.

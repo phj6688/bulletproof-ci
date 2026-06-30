@@ -51,6 +51,8 @@ bulletproof-ci --stack skill --pr       # open a chore/ci PR adding CI to a skil
 | `--node-versions LIST` | `20,22` | Comma-separated node versions for the test matrix (node stack), e.g. `22` or `20,22,24`. |
 | `--gate-name "NAME"` | `CI passed` | Name of the aggregate gate job (the required context). |
 | `--e2e` | off | Add a Playwright e2e job (node stacks only). |
+| `--mutation` | off | Also emit `.github/workflows/mutation.yml`: a scheduled (cron) + manual mutation-testing run (cosmic-ray for python, Stryker for node). Advisory, never a per-PR blocker. python/node only. |
+| `--cron "EXPR"` | `0 4 * * 1` | Schedule for `--mutation` (weekly Mon 04:00 UTC by default). |
 | `--protect` | off | Apply branch protection requiring the gate on each branch (needs `gh` + `jq`). |
 | `--enforce-admins` / `--no-enforce-admins` | enforce | Whether protection binds admins (with `--protect`). |
 | `--reviews N` | `0` | Required approving reviews for protection. |
@@ -83,6 +85,24 @@ protected context to match (re-run with `--protect`).
 
 It standardizes the gate shape. It does not invent tests: a repo with no tests
 gets an honest green "no tests yet" step, not a fake pass.
+
+## Mutation testing (opt-in)
+
+`--mutation` emits a SECOND workflow, `.github/workflows/mutation.yml`, separate
+from `ci.yml`. It runs on a schedule (`--cron`, default weekly Mon 04:00 UTC)
+plus manual `workflow_dispatch` only: no `pull_request` / `push`, so it is never
+a per-PR blocker. It installs the mutation tool inside the job (cosmic-ray for
+python via `pip`, Stryker via `npx` for node), runs a scoped pass, and writes a
+mutation kill-rate to the run summary. It is advisory: a low score does not fail
+the job, only real tooling errors do. There is no aggregate gate job in this
+workflow on purpose.
+
+A full mutation run is too slow for CI, so the workflow scopes itself to a
+representative module (cosmic-ray `module-path`, default `src`) or glob (Stryker
+`--mutate`, default `src/**/*.{js,ts}`) to sample roughly 100-200 mutants. Edit
+that scope to your hottest module. Stryker also needs a test-runner plugin (e.g.
+`@stryker-mutator/jest-runner`) declared in your repo. `--mutation` applies to
+python and node only; other stacks log a warning and are skipped.
 
 ## Requirements
 

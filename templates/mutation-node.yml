@@ -1,0 +1,81 @@
+name: Mutation
+
+# Scheduled, advisory mutation testing (Stryker). Reports a mutation kill-rate
+# (mutation score) to the run summary. Triggers are schedule + manual dispatch
+# ONLY: no pull_request / push, so this is never a per-PR blocker. It is
+# advisory: a low score does NOT fail the job, only real tooling errors do.
+# There is no aggregate gate job here on purpose; this is not the CI gate.
+on:
+  schedule:
+    # Default: weekly, Monday 04:00 UTC. Substituted from --cron.
+    - cron: '__CRON__'
+  workflow_dispatch:
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+__DEFAULTS_BLOCK__
+
+jobs:
+  mutation:
+    name: Stryker mutation (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Detect package manager
+        id: pm
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pm=pnpm;
+          elif [ -f yarn.lock ]; then pm=yarn;
+          else pm=npm; fi
+          echo "pm=$pm" >> "$GITHUB_OUTPUT"
+          echo "Package manager: $pm"
+      - if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install project dependencies
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+        run: |
+          case "$PM" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) yarn install --frozen-lockfile ;;
+            npm)  npm ci ;;
+          esac
+      - name: Run Stryker (scoped sample) and summarize
+        run: |
+          # Scope --mutate to a representative glob so a run samples roughly
+          # 100-200 mutants (a full-tree run is too slow). Point it at your
+          # hottest directory. Stryker needs a test-runner plugin for your stack
+          # (e.g. @stryker-mutator/jest-runner or vitest-runner) as a
+          # devDependency plus a stryker.conf.* in the repo. Keep
+          # thresholds.break UNSET so a low score stays advisory and never fails
+          # this job.
+          if npx --yes -p @stryker-mutator/core stryker run \
+               --mutate "src/**/*.{js,ts}" \
+               --reporters clear-text 2>&1 | tee stryker.log; then
+            :
+          else
+            echo "::error::Stryker failed to run"; exit 1
+          fi
+          {
+            echo "## Stryker mutation (advisory)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          score_line="$(grep -iE 'mutation score' stryker.log | tail -n1 || true)"
+          if [ -n "$score_line" ]; then
+            echo "- Mutation kill-rate: ${score_line}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Stryker ran; mutation score not parsed (see job log)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo ""
+            echo "Advisory only: a low score does not fail this run."
+          } >> "$GITHUB_STEP_SUMMARY"

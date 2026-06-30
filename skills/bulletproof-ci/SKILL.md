@@ -53,6 +53,8 @@ Flags:
 | `--branches a,b,c` | `dev,master,main` | Workflow trigger branches and (with `--protect`) the branches to protect. |
 | `--gate-name "NAME"` | `CI passed` | Name of the aggregate gate job (the required context). |
 | `--e2e` | off | Add a Playwright e2e job. Node stacks only; ignored elsewhere. |
+| `--mutation` | off | Also write `.github/workflows/mutation.yml`: a scheduled + manual mutation-testing run (cosmic-ray for python, Stryker for node). Advisory, never a per-PR gate. python/node only; ignored elsewhere. |
+| `--cron "EXPR"` | `0 4 * * 1` | Schedule for `--mutation` (weekly Mon 04:00 UTC by default). |
 | `--protect` | off | After writing, apply branch protection requiring the gate on each branch. Needs `gh` + `jq`. |
 | `--enforce-admins` / `--no-enforce-admins` | enforce | Whether protection binds admins too (with `--protect`). |
 | `--reviews N` | `0` | Required approving reviews for protection. |

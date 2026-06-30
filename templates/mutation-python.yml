@@ -1,0 +1,86 @@
+name: Mutation
+
+# Scheduled, advisory mutation testing (cosmic-ray). Reports a mutation
+# kill-rate to the run summary. Triggers are schedule + manual dispatch ONLY:
+# no pull_request / push, so this is never a per-PR blocker. It is advisory: a
+# low kill-rate does NOT fail the job, only real tooling errors do. There is no
+# aggregate gate job here on purpose; this is not the CI gate.
+on:
+  schedule:
+    # Default: weekly, Monday 04:00 UTC. Substituted from --cron.
+    - cron: '__CRON__'
+  workflow_dispatch:
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+__DEFAULTS_BLOCK__
+
+jobs:
+  mutation:
+    name: cosmic-ray mutation (advisory)
+    runs-on: ubuntu-latest
+    env:
+      # Scope the run to one package/module so a session is roughly 100-200
+      # mutants instead of the whole tree (a full run is too slow). Point this
+      # at your hottest module. cosmic-ray has no native "sample N"; scoping the
+      # module-path is the lever.
+      MODULE_PATH: src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install cosmic-ray and the project
+        run: |
+          python -m pip install --upgrade pip
+          pip install cosmic-ray
+          pip install -e . || pip install -r requirements.txt || true
+          pip install pytest
+      - name: Run cosmic-ray (scoped, advisory)
+        run: |
+          cat > cosmic-ray.toml <<EOF
+          [cosmic-ray]
+          module-path = "${MODULE_PATH}"
+          timeout = 30.0
+          excluded-modules = []
+          test-command = "python -m pytest -q -x"
+
+          [cosmic-ray.distributor]
+          name = "local"
+          EOF
+          cosmic-ray init cosmic-ray.toml cr-session.sqlite \
+            || { echo "::error::cosmic-ray init failed (baseline tests must pass; check MODULE_PATH)"; exit 1; }
+          cosmic-ray exec cosmic-ray.toml cr-session.sqlite \
+            || { echo "::error::cosmic-ray exec failed"; exit 1; }
+      - name: Mutation kill-rate -> summary
+        if: always()
+        run: |
+          {
+            echo "## cosmic-ray mutation (advisory)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ ! -f cr-session.sqlite ]; then
+            echo "No cosmic-ray session produced; nothing to summarize." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          survival="$(cr-rate cr-session.sqlite 2>/dev/null | tr -dc '0-9.' || true)"
+          if [ -n "$survival" ]; then
+            kill_rate="$(awk -v s="$survival" 'BEGIN { printf "%.2f", 100 - s }' || true)"
+            echo "- Mutation kill-rate: **${kill_rate}%** (survival ${survival}%)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Could not parse the mutation rate; see cr-report below." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          {
+            echo ""
+            echo '```'
+            cr-report cr-session.sqlite 2>/dev/null | tail -n 20 || true
+            echo '```'
+            echo ""
+            echo "Advisory only: a low kill-rate does not fail this run."
+          } >> "$GITHUB_STEP_SUMMARY"
