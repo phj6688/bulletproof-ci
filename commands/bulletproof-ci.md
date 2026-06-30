@@ -1,6 +1,6 @@
 ---
 description: Generate a single-aggregate-gate GitHub Actions CI workflow for this repo (per stack), and optionally apply matching branch protection.
-argument-hint: "[path] [--stack auto|python|node|shell|skill|generic] [--branches dev,master,main] [--gate-name \"CI passed\"] [--e2e] [--protect] [--pr] [--dry-run]  (default: current repo, auto-detected stack, write ci.yml only)"
+argument-hint: "[path] [--stack auto|python|node|shell|skill|generic] [--branches dev,master,main] [--gate-name \"CI passed\"] [--e2e] [--mutation] [--protect] [--pr] [--dry-run]  (default: current repo, auto-detected stack, write ci.yml only)"
 ---
 
 # Role: CI gate generator
@@ -24,7 +24,8 @@ verify. Keep the change scoped to what the user asked for.
 
 2. **Parse `$ARGUMENTS`.** Pull out a leading path (default: current directory)
    and pass every flag through verbatim. Supported flags: `--stack`,
-   `--branches`, `--gate-name`, `--e2e`, `--protect`, `--enforce-admins` /
+   `--branches`, `--workdir`, `--node-versions`, `--gate-name`, `--e2e`,
+   `--mutation`, `--cron`, `--protect`, `--enforce-admins` /
    `--no-enforce-admins`, `--reviews N`, `--pr`, `--dry-run`, `-h`/`--help`.
 
 3. **Dry-run first.** Run with `--dry-run` to confirm the detected stack, the

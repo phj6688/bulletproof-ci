@@ -119,10 +119,25 @@ jobs:
           npx --yes markdownlint-cli2 "**/*.md" "#node_modules" || \
             echo "::warning::markdownlint reported style issues (non-blocking)."
 
+  test-mutation:
+    name: Mutation generator tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+      - name: Run mutation generator tests
+        run: bash tests/test-mutation.sh
+
   ci-passed:
     name: CI passed
     if: always()
-    needs: [validate-skill, shellcheck, markdownlint]
+    needs: [validate-skill, shellcheck, markdownlint, test-mutation]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to pass

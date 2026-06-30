@@ -13,6 +13,8 @@ PROTECT=0
 ENFORCE_ADMINS=1
 REVIEWS=0
 E2E=0
+MUTATION=0
+CRON="0 4 * * 1"
 PR=0
 DRY_RUN=0
 TARGET=""
@@ -44,6 +46,13 @@ Flags:
                             (node stack). Default: 20,22. E.g. "22" or "20,22,24".
   --gate-name "NAME"        Aggregate gate job name (default: "CI passed").
   --e2e                     Add a Playwright e2e job (node stacks only).
+  --mutation                Also emit .github/workflows/mutation.yml: a scheduled
+                            (cron) + manual mutation-testing run. cosmic-ray for
+                            python, Stryker for node. It reports a kill-rate and
+                            is advisory (never blocks a PR, no aggregate gate).
+                            Ignored for other stacks.
+  --cron "EXPR"             Schedule for --mutation (default: "0 4 * * 1",
+                            weekly Mon 04:00 UTC).
   --protect                 After generating, apply branch protection requiring
                             the gate on each --branches branch (needs gh).
   --enforce-admins          Enforce protection on admins too (default with --protect).
@@ -57,6 +66,7 @@ Flags:
 Examples:
   bulletproof-ci                         # auto-detect, write .github/workflows/ci.yml
   bulletproof-ci . --stack node --e2e    # node app with Playwright e2e job
+  bulletproof-ci --stack python --mutation   # add a weekly advisory mutation run
   bulletproof-ci ~/projects/foo --protect --branches dev,master
   bulletproof-ci --stack skill --pr      # open a PR adding CI to a skill repo
   bulletproof-ci --dry-run               # show the plan only
@@ -85,6 +95,9 @@ while [ $# -gt 0 ]; do
     --enforce-admins)    ENFORCE_ADMINS=1; shift ;;
     --no-enforce-admins) ENFORCE_ADMINS=0; shift ;;
     --e2e)           E2E=1; shift ;;
+    --mutation)      MUTATION=1; shift ;;
+    --cron)          CRON="${2:-}"; shift 2 ;;
+    --cron=*)        CRON="${1#*=}"; shift ;;
     --pr)            PR=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage; exit 0 ;;
@@ -149,6 +162,20 @@ if [ "$E2E" = "1" ] && [ "$STACK" != "node" ]; then
   E2E=0
 fi
 
+# Opt-in scheduled mutation workflow. Only python and node have a template.
+MUT_TEMPLATE=""
+if [ "$MUTATION" = "1" ]; then
+  case "$STACK" in
+    python|node) MUT_TEMPLATE="$TEMPLATE_DIR/mutation-$STACK.yml" ;;
+    *) log "warning: --mutation only applies to python and node stacks; ignoring for stack '$STACK'."
+       MUTATION=0 ;;
+  esac
+fi
+if [ "$MUTATION" = "1" ]; then
+  [ -f "$MUT_TEMPLATE" ] || die "template not found: $MUT_TEMPLATE"
+  [ -n "$CRON" ] || die "--cron must not be empty"
+fi
+
 # ---- render -----------------------------------------------------------------
 # Branches: "a,b,c" -> "a, b, c" for the YAML list.
 BRANCHES_YAML="${BRANCHES//,/, }"
@@ -198,6 +225,20 @@ render() {
   rendered="${rendered//$'\n__DEFAULTS_BLOCK__'/$DEFAULTS_BLOCK}"
   rendered="${rendered//$'\n__CACHE_DEP_PATH__'/${CACHE_DEP_PATH:+$'\n'$CACHE_DEP_PATH}}"
   rendered="${rendered//$'\n__GATE_WD__'/$GATE_WD}"
+  printf '%s' "$rendered"
+}
+
+# Render the scheduled mutation workflow. Separate from render(): a different
+# token set (__CRON__, plus the workdir __DEFAULTS_BLOCK__ for any stack) and no
+# aggregate gate. The empty-workdir case collapses the defaults line, leaving the
+# template byte-identical.
+render_mutation() {
+  local rendered mut_defaults=""
+  if [ -n "$WORKDIR" ]; then
+    mut_defaults=$'\n\ndefaults:\n  run:\n    working-directory: '"$WORKDIR"
+  fi
+  rendered="$(sed -e "s|__CRON__|${CRON}|g" "$MUT_TEMPLATE")"
+  rendered="${rendered//$'\n__DEFAULTS_BLOCK__'/$mut_defaults}"
   printf '%s' "$rendered"
 }
 
@@ -263,8 +304,15 @@ if [ "$E2E" = "1" ]; then
   CONTENT="$(inject_e2e "$CONTENT")"
 fi
 
+MUT_CONTENT=""
+if [ "$MUTATION" = "1" ]; then
+  MUT_CONTENT="$(render_mutation)"
+fi
+
 OUT_REL=".github/workflows/ci.yml"
 OUT="$TARGET/$OUT_REL"
+MUT_OUT_REL=".github/workflows/mutation.yml"
+MUT_OUT="$TARGET/$MUT_OUT_REL"
 
 # ---- validate emitted YAML --------------------------------------------------
 validate_yaml() {
@@ -279,6 +327,7 @@ log "stack:           $STACK"
 log "branches:        $BRANCHES"
 log "gate name:       $GATE_NAME"
 log "e2e job:         $([ "$E2E" = 1 ] && echo yes || echo no)"
+log "mutation:        $([ "$MUTATION" = 1 ] && echo "yes (cron: $CRON)" || echo no)"
 log "output:          $OUT_REL"
 log "protect:         $([ "$PROTECT" = 1 ] && echo "yes (enforce-admins=$ENFORCE_ADMINS, reviews=$REVIEWS)" || echo no)"
 log "open PR:         $([ "$PR" = 1 ] && echo yes || echo no)"
@@ -289,6 +338,13 @@ if [ "$DRY_RUN" = "1" ]; then
   printf '%s\n' "$CONTENT"
   echo "----------------------------------------------------------------"
   validate_yaml "$CONTENT" >/dev/null && log "(dry-run) emitted YAML parses OK"
+  if [ "$MUTATION" = "1" ]; then
+    log "--dry-run: would also write $MUT_OUT_REL with the following content:"
+    echo "----------------------------------------------------------------"
+    printf '%s\n' "$MUT_CONTENT"
+    echo "----------------------------------------------------------------"
+    validate_yaml "$MUT_CONTENT" >/dev/null && log "(dry-run) mutation YAML parses OK"
+  fi
   [ "$PROTECT" = "1" ] && log "(dry-run) would apply branch protection on: $BRANCHES"
   [ "$PR" = "1" ] && log "(dry-run) would commit to chore/ci, push, and open a PR"
   exit 0
@@ -296,12 +352,22 @@ fi
 
 validate_yaml "$CONTENT" >/dev/null
 log "emitted YAML parses OK"
+if [ "$MUTATION" = "1" ]; then
+  validate_yaml "$MUT_CONTENT" >/dev/null
+  log "mutation YAML parses OK"
+fi
 
 # ---- write workflow (working tree) -----------------------------------------
 write_workflow() {
   mkdir -p "$TARGET/.github/workflows"
   printf '%s\n' "$CONTENT" > "$OUT"
   log "wrote $OUT"
+}
+
+write_mutation_workflow() {
+  mkdir -p "$TARGET/.github/workflows"
+  printf '%s\n' "$MUT_CONTENT" > "$MUT_OUT"
+  log "wrote $MUT_OUT"
 }
 
 # ---- branch protection ------------------------------------------------------
@@ -352,6 +418,7 @@ open_pr() {
     base="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo dev)"
     git switch -c chore/ci 2>/dev/null || git switch chore/ci
     git add "$OUT_REL"
+    [ "$MUTATION" = "1" ] && git add "$MUT_OUT_REL"
     if git diff --cached --quiet; then
       log "no workflow changes to commit"
     else
@@ -366,13 +433,9 @@ open_pr() {
   )
 }
 
-if [ "$PR" = "1" ]; then
-  write_workflow
-  open_pr
-else
-  write_workflow
-fi
-
+write_workflow
+[ "$MUTATION" = "1" ] && write_mutation_workflow
+[ "$PR" = "1" ] && open_pr
 [ "$PROTECT" = "1" ] && apply_protection
 
 log "done."
